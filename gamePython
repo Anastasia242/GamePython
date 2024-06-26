@@ -1,0 +1,859 @@
+import pygame
+import sys
+import os
+
+# Ініціалізація Pygame
+pygame.init()
+
+# Задання розміру екрану
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 600
+MAX_FALL_SPEED = 10  # максимально допустима швидкість падіння
+
+screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+pygame.display.set_caption("Platformer Game")
+
+GRAVITY = 0.5  # Гравітація
+
+# Зміна кадрів анімації ходьби
+ANIMATION_FRAME_RATE = 5
+
+
+class Menu:
+    def __init__(self):
+        # Ініціалізація параметрів меню
+        self.menu_image = self.load_image("images/Menu.png")
+        self.menu_items = ["Start", "Options", "Quit"]
+        self.selected_item = 0
+        self.images = {
+            "Start": self.load_image("images/start_menu.png"),
+            "Options": self.load_image("images/options_menu.png"),
+            "Quit": self.load_image("images/quit_menu.png")
+        }
+        self.MENU_ITEM_HEIGHT = 60
+
+    def load_image(self, path):
+        if not os.path.exists(path):
+            print(f"File not found: {path}")
+            return pygame.Surface((100, 50))  # Повертаємо заглушку замість зображення
+        return pygame.image.load(path).convert_alpha()
+
+    def draw(self, screen):
+        # Малювання фону меню
+        screen.blit(self.menu_image, (SCREEN_WIDTH // 4, SCREEN_HEIGHT // 4))
+
+        # Малювання елементів меню
+        for i, item in enumerate(self.menu_items):
+            image = self.images[item]
+            if i == self.selected_item:
+                image = pygame.transform.scale(image, (
+                    int(image.get_width() * 1.2), int(image.get_height() * 1.2)))  # Збільшення зображення на 20%
+            image_rect = image.get_rect(center=(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 1.75 + i * self.MENU_ITEM_HEIGHT))
+            screen.blit(image, image_rect.topleft)
+
+    def update_selection(self, mouse_pos):
+        # Оновлення вибору залежно від позиції миші
+        for i, item in enumerate(self.menu_items):
+            image = self.images[item]
+            image_rect = image.get_rect(center=(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + i * 60))
+            if image_rect.collidepoint(mouse_pos):
+                self.selected_item = i
+
+    def get_selected_item(self):
+        # Повертаємо вибраний елемент меню
+        return self.menu_items[self.selected_item]
+
+
+# Клас Inventory
+class Inventory:
+    def __init__(self):
+        self.items = []
+        self.background_image = pygame.image.load("images/inventory_background.png").convert_alpha()
+        self.item_images = {
+            'key': pygame.image.load("images/key_type1_invent.png").convert_alpha(),
+            'health_potion': pygame.image.load("images/health_potion.png").convert_alpha()
+        }
+
+    def add_item(self, item):
+        self.items.append(item)
+        print(f"Added {item} to inventory")
+
+    def remove_item(self, item):
+        if item in self.items:
+            self.items.remove(item)
+            print(f"Removed {item} from inventory")
+
+    def use_item(self, item, player):
+        if item in self.items:
+            if item == 'health_potion':
+                # Використання зілля здоров'я з обмеженням на максимальне здоров'я
+                player.health = min(player.health + 20, player.max_health)
+                self.remove_item(item)
+                print(f"Used {item}. Player's health is now {player.health}.")
+
+    def draw(self, screen):
+        # Малювання фону інвентаря
+        screen.blit(self.background_image, (SCREEN_WIDTH // 4, SCREEN_HEIGHT // 4))
+
+        # Малювання елементів інвентаря
+        inventory_font = pygame.font.Font(None, 24)
+        for i, item in enumerate(self.items):
+            item_x = SCREEN_WIDTH // 4 + 10
+            item_y = SCREEN_HEIGHT // 4 + 10 + i * 40
+            if item in self.item_images:
+                item_image = self.item_images[item]
+                # Збільшуємо координати, щоб ключ був трошки нижче та правіше
+                item_x += 75  # Зміщення вправо
+                item_y += 150  # Зміщення вниз
+                screen.blit(item_image, (item_x, item_y))
+            else:
+                text_surface = inventory_font.render(item, True, (255, 255, 255))
+                screen.blit(text_surface, (item_x, item_y))
+
+
+class Key(pygame.sprite.Sprite):
+    def __init__(self, x, y):
+        super().__init__()
+        self.image = pygame.image.load("images/key_type1.png").convert_alpha()
+        self.rect = self.image.get_rect(topleft=(x, y))
+        self.picked_up = False
+
+    def update(self):
+        if self.picked_up:
+            self.kill()  # Видаляємо з усіх груп
+
+    def draw(self, screen):
+        if not self.picked_up:
+            screen.blit(self.image, self.rect.topleft)
+
+
+class Treasure(pygame.sprite.Sprite):
+    def __init__(self, x, y, health_potions_group):
+        super().__init__()
+        self.image = pygame.image.load("images/treasure_chest_closed_type1.png").convert_alpha()
+        self.rect = self.image.get_rect(topleft=(x, y))
+        self.locked = True
+        self.show_potion = False
+        self.show_potion_timer = 0
+        self.potion = None
+
+    def unlock(self):
+        self.locked = False
+        self.image = pygame.image.load("images/treasure_chest_open_type1.png").convert_alpha()
+        self.show_potion = True
+        self.show_potion_timer = pygame.time.get_ticks()  # Встановити таймер
+        self.potion = HealthPotion(self.rect.centerx, self.rect.centery - 20)
+        health_potions.add(self.potion)  # Додаємо зілля до групи
+
+    def update(self):
+        # Приховати зілля через 2 секунди
+        if self.show_potion and pygame.time.get_ticks() - self.show_potion_timer > 1000:
+            self.show_potion = False
+            health_potions.remove(self.potion)
+            self.potion = None
+
+    def draw(self, screen):
+        screen.blit(self.image, self.rect.topleft)
+
+
+# Клас для предмету зілля здоров'я
+class HealthPotion(pygame.sprite.Sprite):
+    def __init__(self, x, y):
+        super().__init__()
+        self.image = pygame.image.load(
+            'images/health_potion.png').convert_alpha()  # Завантаження зображення зілля здоров'я
+        self.rect = self.image.get_rect()
+        self.rect.center = (x, y)
+
+    def apply_health(self, player):
+        # Застосування зілля здоров'я до гравця з обмеженням на максимальне здоров'я
+        player.health = min(player.health + 20, player.max_health)
+
+
+# Клас для платформ
+class Platform:
+    def __init__(self, x, y, width, height, platform_type, images_dict, moving=False, move_range=(0, 0),
+                 moving_horizontal=False, speed=2, moving_vertical=False):
+        self.platform_type = platform_type
+        self.images_dict = images_dict
+        self.image = self.images_dict.get(self.platform_type)
+        self.rect = self.image.get_rect(topleft=(x, y))
+        self.moving = moving  # Чи повинна платформа рухатися вертикально
+        self.moving_horizontal = moving_horizontal  # Чи повинна платформа рухатися горизонтально
+        self.direction = 1  # Напрямок руху платформи (1 - вправо, -1 - вліво)
+        self.speed = speed  # Швидкість руху платформи
+        self.move_range = move_range  # Діапазон руху платформи
+        self.moving_vertical = moving_vertical
+
+        # Створення маски з меншими розмірами
+        mask_width = self.rect.width - 25  # зменшити ширину маски на 25 пікселів
+        mask_height = self.rect.height - 27  # зменшити висоту маски на 27 пікселів
+        self.mask = pygame.mask.Mask((mask_width, mask_height), fill=True)
+
+        # Зміщення маски в центр зображення
+        self.mask_rect = pygame.Rect(
+            (self.rect.width - mask_width) // 2,
+            (self.rect.height - mask_height) // 2,
+            mask_width,
+            mask_height
+        )
+
+    def update(self):
+        if self.moving:
+            if self.moving_horizontal:
+                self.rect.x += self.direction * self.speed
+                if self.rect.x <= self.move_range[0]:
+                    self.direction = 1
+                elif self.rect.x >= self.move_range[1] - self.rect.width:
+                    self.direction = -1
+            elif self.moving_vertical:
+                self.rect.y += self.direction * self.speed
+                if self.rect.y <= self.move_range[0]:
+                    self.direction = 1
+                elif self.rect.y >= self.move_range[1] - self.rect.height:
+                    self.direction = -1
+
+    def draw(self, screen):
+        screen.blit(self.image, self.rect.topleft)
+
+
+# Створення списку платформ
+platform_images = {
+    "platform_type_1": pygame.image.load("images/platform_1.png").convert_alpha(),
+    "platform_type_2": pygame.image.load("images/platform_2.png").convert_alpha(),
+    "platform_type_3": pygame.image.load("images/platform_3.png").convert_alpha(),
+    "platform_type_5": pygame.image.load("images/platform_2.png").convert_alpha(),
+    "platform_type_big": pygame.image.load("images/platform_big1.png").convert_alpha(),
+    "platform_type_6": pygame.image.load("images/platform6.png").convert_alpha(),
+    "platform_type_7": pygame.image.load("images/platform_7.png").convert_alpha(),
+    "platform_type_8": pygame.image.load("images/platform_8.png").convert_alpha()
+}
+
+platforms = [
+    Platform(100, SCREEN_HEIGHT - 100, SCREEN_WIDTH, 20, "platform_type_big", platform_images, moving=False),
+    Platform(850, 200, 200, 20, "platform_type_2", platform_images, moving=True, move_range=(150, 450),
+             moving_vertical=True, speed=2),  # Рухається в межах 150-350
+    Platform(50, 130, 200, 20, "platform_type_7", platform_images, moving=False),  # Не рухається
+    Platform(650, 400, 200, 20, "platform_type_1", platform_images, moving=False),
+    Platform(1000, 400, 200, 20, "platform_type_5", platform_images, moving=False),
+    Platform(1000, 200, 200, 20, "platform_type_6", platform_images, moving=False),
+    Platform(500, 200, 200, 20, "platform_type_2", platform_images, moving=True, move_range=(150, 450),
+             moving_vertical=True, speed=2),
+    Platform(1100, 500, 200, 20, "platform_type_8", platform_images, moving=False)
+]
+
+
+class Player(pygame.sprite.Sprite):
+    def __init__(self, x, y, width, height):
+        super().__init__()
+        # Завантаження зображень анімації ходьби
+        self.walking_frames = [
+            pygame.image.load("images/walk1.png").convert_alpha(),
+            pygame.image.load("images/walk2.png").convert_alpha(),
+            pygame.image.load("images/walk3.png").convert_alpha(),
+            pygame.image.load("images/walk4.png").convert_alpha(),
+            pygame.image.load("images/walk5.png").convert_alpha()
+        ]
+        # Завантаження зображень анімації спокою
+        self.idle_frame = pygame.image.load("images/idle.png").convert_alpha()
+
+        # Завантаження зображень анімації стрибка
+        self.jumping_frames = [
+            pygame.image.load("images/jump1.png").convert_alpha(),
+            pygame.image.load("images/jump2.png").convert_alpha(),
+            pygame.image.load("images/jump3.png").convert_alpha()
+        ]
+
+        self.attack_frames = [
+            pygame.image.load("images/attack3.png").convert_alpha()
+        ]
+
+        self.death_frames = [
+            pygame.image.load("images/death_ch1.png").convert_alpha(),
+            pygame.image.load("images/death_ch2.png").convert_alpha(),
+            pygame.image.load("images/death_ch3.png").convert_alpha(),
+            pygame.image.load("images/death_ch4.png").convert_alpha(),
+            pygame.image.load("images/death_ch5.png").convert_alpha()
+        ]
+
+        self.current_frame = 0
+        self.frame_counter = 0
+        self.image = self.idle_frame  # Ініціалізація атрибута self.image
+        self.rect = self.image.get_rect(topleft=(x, y))  # Використання self.image для створення self.rect
+        self.velocity_y = 0
+        self.velocity_x = 0
+        self.on_ground = False
+        self.moving_left = False
+        self.moving_right = False
+        self.facing_right = True  # Додаємо змінну для напрямку руху
+        self.jumping = False
+        self.attacking = False
+        self.dying = False
+        self.dead = False
+        self.enemy = None  # Посилання на ворога
+
+        # Додавання атрибутів здоров'я
+        self.max_health = 100
+        self.health = self.max_health
+        self.inventory = Inventory()
+        self.has_key = False  # Змінна для перевірки наявності ключа
+
+        # Швидкість анімації смерті
+        self.death_animation_speed = 20
+
+    def move(self, dx, dy):
+        self.rect.x += dx
+        self.rect.y += dy
+
+    def jump(self):
+        if self.on_ground and not self.dying and not self.dead:
+            self.velocity_y = -16
+            self.on_ground = False
+            self.jumping = True
+
+    def attack(self):
+        if self.enemy is not None:
+            self.enemy.take_damage(10)  # нанесення урону ворогові
+        if not self.attacking and not self.dying and not self.dead:
+            self.attacking = True
+            self.current_frame = 0
+            self.frame_counter = 0
+            # Збільшуємо швидкість пересування по горизонталі під час атаки
+            if self.facing_right:
+                self.velocity_x += 5
+            else:
+                self.velocity_x -= 5
+
+    def apply_gravity(self):
+        if not self.dying and not self.dead:
+            self.velocity_y += 1  # Гравітація
+            if self.velocity_y > 10:  # Максимальна швидкість падіння
+                self.velocity_y = 10
+            self.rect.y += self.velocity_y
+
+    def check_collisions(self, platforms):
+        self.on_ground = False
+        for platform in platforms:
+            # Оновлення для перевірки зменшеної маски платформи
+            platform_mask_rect = platform.mask_rect.move(platform.rect.topleft)
+            if self.rect.colliderect(platform_mask_rect):
+                if self.velocity_y > 0:  # Падіння
+                    self.rect.bottom = platform_mask_rect.top
+                    self.velocity_y = 0
+                    self.on_ground = True
+                    self.jumping = False  # Завершуємо стрибок
+
+    def check_key_pickup(self, keys):
+        for key in keys:
+            if pygame.sprite.collide_mask(self, key):
+                if not key.picked_up:
+                    self.inventory.add_item('key')
+                    key.picked_up = True
+                    keys.remove(key)
+                    print(f"Key added to inventory. Current items: {self.inventory.items}")
+
+    def check_treasure_interaction(self, treasures):
+        for treasure in treasures:
+            if pygame.sprite.collide_mask(self, treasure):
+                if 'key' in self.inventory.items and treasure.locked:
+                    treasure.unlock()
+                    print("Treasure unlocked!")
+                elif treasure.locked:
+                    print("You need a key to unlock this treasure!")
+
+    def update(self, platforms, keys, treasures, enemies, key_area, treasure_area, inventory, treasure):
+        # перевірка відстані до ворога та оновлення посилання
+        for enemy in enemies:
+            distance_to_enemy = abs(self.rect.x - enemy.rect.x)
+            if distance_to_enemy < 200:  # якщо гравець ближче ніж на 200 пікселів
+                self.enemy = enemy
+                break
+        else:
+            self.enemy = None
+
+        # Якщо гравець помер, не виконувати інші дії
+        if self.dead:
+            return
+
+        # Горизонтальний рух
+        if self.moving_left:
+            self.velocity_x = -2
+            self.facing_right = False
+        elif self.moving_right:
+            self.velocity_x = 2
+            self.facing_right = True
+        else:
+            self.velocity_x = 0
+
+        self.move(self.velocity_x, 0)
+
+        # Застосування гравітації
+        self.apply_gravity()
+
+        # Перевірка колізій
+        self.check_collisions(platforms)
+        self.check_key_pickup(keys)
+        self.check_treasure_interaction(treasures)
+
+        # Оновлення анімації смерті
+        if self.dying:
+            self.frame_counter += 1
+            if self.frame_counter >= self.death_animation_speed:
+                self.frame_counter = 0
+                self.current_frame += 1
+                if self.current_frame >= len(self.death_frames):
+                    self.current_frame = len(self.death_frames) - 1
+                    self.dead = True  # Гравець помер
+            self.image = self.death_frames[self.current_frame]
+
+            # Підняття передостаннього та останнього кадрів анімації смерті
+            if self.current_frame == len(self.death_frames) - 2:  # Передостанній кадр
+                self.rect.y -= 2  # Зміщення кадру вгору
+            elif self.dead:  # Останній кадр
+                self.rect.y -= 15  # Зміщення кадру вгору
+
+            return  # Зупинити оновлення інших анімацій
+        # Оновлення анімації
+        if self.jumping:
+            self.frame_counter += 1
+            if self.frame_counter >= 10:
+                self.frame_counter = 0
+                self.current_frame = (self.current_frame + 1) % len(self.jumping_frames)
+                self.image = self.jumping_frames[self.current_frame]
+            # Припинення стрибка після досягнення останнього кадру
+            if self.current_frame == len(self.jumping_frames) - 1:
+                self.jumping = False
+                self.current_frame = 0
+                self.image = self.jumping_frames[self.current_frame]
+            self.image = self.jumping_frames[self.current_frame]
+        elif self.moving_left or self.moving_right:
+            self.frame_counter += 1
+            if self.frame_counter >= 10:
+                self.frame_counter = 0
+                self.current_frame = (self.current_frame + 1) % len(self.walking_frames)
+            self.image = self.walking_frames[self.current_frame]
+        elif self.attacking:
+            self.frame_counter += 1
+            if self.frame_counter >= 10:
+                self.frame_counter = 0
+                self.current_frame += 1
+                if self.current_frame >= len(self.attack_frames):
+                    self.current_frame = 0
+                    self.attacking = False  # Завершення атаки
+            self.image = self.attack_frames[self.current_frame]
+        else:
+            self.image = self.idle_frame
+
+    def take_damage(self, amount):
+        if not self.dying and not self.dead:
+            self.health -= amount
+            if self.health <= 0:
+                self.health = 0
+                self.dying = True  # Почати анімацію смерті
+                self.current_frame = 0
+                self.frame_counter = 0
+
+    def draw_health_bar(self, screen):
+        bar_width = 100
+        bar_height = 10
+        fill = (self.health / self.max_health) * bar_width
+        outline_rect = pygame.Rect(self.rect.x, self.rect.y - 20, bar_width, bar_height)
+        fill_rect = pygame.Rect(self.rect.x, self.rect.y - 20, fill, bar_height)
+        pygame.draw.rect(screen, (255, 0, 0), fill_rect)
+        pygame.draw.rect(screen, (0, 0, 0), outline_rect, 2)
+
+    def draw(self, screen):
+        flipped_image = pygame.transform.flip(self.image, not self.facing_right, False)
+        screen.blit(flipped_image, self.rect.topleft)
+        self.draw_health_bar(screen)
+
+
+# Завантаження зображень ворога
+try:
+    images_dict = {
+        "enemy_attack1": pygame.image.load("images/ice_golem2.png").convert_alpha(),
+        "enemy_attack2": pygame.image.load("images/ice_golem3.png").convert_alpha(),
+        "enemy_attack3": pygame.image.load("images/ice_golem4.png").convert_alpha(),
+        "enemy_attack4": pygame.image.load("images/ice_golem5.png").convert_alpha(),
+        "enemy_rock": pygame.image.load("images/ice_golem_idle.png").convert_alpha()
+    }
+except FileNotFoundError as e:
+    print(f"Помилка завантаження файлу: {e}")
+    pygame.quit()
+    exit()
+
+
+class Enemy(pygame.sprite.Sprite):
+    def __init__(self, x, y, width, height, images_dict, move_range=(0, 0), speed=1):
+        super().__init__()
+        # Завантаження зображень анімації атаки
+        self.attack_frames = [
+            images_dict["enemy_attack1"],
+            images_dict["enemy_attack2"],
+            images_dict["enemy_attack3"],
+            images_dict["enemy_attack4"]
+        ]
+        self.rock_frame = images_dict["enemy_rock"]
+        self.death_frames = [
+            images_dict["enemy_death2"],
+            images_dict["enemy_death1"]
+        ]
+
+        self.current_frame = 0
+        self.frame_counter = 0
+        self.image = self.rock_frame  # Спочатку ворог прикидається каменем
+        self.rect = self.image.get_rect(topleft=(x, y))
+        self.move_range = move_range
+        self.speed = speed
+        self.direction = 1  # Напрямок руху ворога (1 - вправо, -1 - вліво)
+        self.velocity_y = 0
+        self.is_aggressive = False  # Спочатку ворог не агресивний
+
+        # Додавання атрибутів здоров'я
+        self.max_health = 100
+        self.health = self.max_health
+
+        self.attack_cooldown = 0  # Змінна для відслідковування часу до наступної атаки
+        self.attack_interval = 60  # Інтервал між атаками (у кадрах)
+
+        self.is_dead = False
+        self.death_animation_duration = 200  # Тривалість анімації смерті (у кадрах)
+        self.death_timer = 0
+
+    def move(self):
+        if self.is_aggressive:
+            self.rect.x += self.direction * self.speed
+            if self.rect.x <= self.move_range[0] or self.rect.x >= self.move_range[1]:
+                self.direction *= -1  # Зміна напрямку руху
+
+    def apply_gravity(self):
+        self.velocity_y += 1  # Гравітація
+        if self.velocity_y > 10:  # Максимальна швидкість падіння
+            self.velocity_y = 10
+        self.rect.y += self.velocity_y
+
+    def attack(self, target):
+        damage_amount = 10  # Скільки урону наносить ворог
+        target.take_damage(damage_amount)
+
+    def check_collisions(self, platforms):
+        for platform in platforms:
+            if self.rect.colliderect(platform.rect):
+                if self.velocity_y > 0:  # Падіння
+                    self.rect.bottom = platform.rect.top
+                    self.velocity_y = 0
+
+    def update(self, platforms, player):
+        if not self.is_dead:
+            # Перевірка здоров'я ворога
+            if self.health <= 0:
+                self.is_dead = True
+                self.current_frame = 0  # Почати анімацію смерті з першого кадру
+                self.death_timer = 0
+
+            # Якщо ворог не мертвий, він може атакувати та рухатися
+            else:
+                # Зменшення таймера атаки
+                if self.attack_cooldown > 0:
+                    self.attack_cooldown -= 1
+
+                # Перевірка відстані до гравця та визначення агресивності
+                distance_to_player = abs(self.rect.x - player.rect.x)
+                if distance_to_player < 200:  # якщо гравець ближче ніж на 200 пікселів
+                    self.is_aggressive = True
+                else:
+                    self.is_aggressive = False
+
+                # Рух ворога
+                if self.is_aggressive:
+                    self.move()
+
+                # Перевірка на колізію з гравцем та завдання урону
+                if self.rect.colliderect(player.rect) and self.attack_cooldown <= 0:
+                    self.attack(player)  # Нанесення урону
+                    self.attack_cooldown = self.attack_interval  # Встановлення паузи між атаками
+
+                # Оновлення анімації атаки
+                if self.is_aggressive:
+                    self.frame_counter += 1
+                    if self.frame_counter >= 20:
+                        self.frame_counter = 0
+                        self.current_frame = (self.current_frame + 1) % len(self.attack_frames)
+                    self.image = self.attack_frames[self.current_frame]
+                else:
+                    self.image = self.rock_frame
+
+                # Застосування гравітації
+                self.apply_gravity()
+
+                # Перевірка колізій з платформами
+                self.check_collisions(platforms)
+
+        if self.is_dead:
+            # Логіка для анімації смерті
+            self.death_timer += 1
+            if self.death_timer == 1:  # Зміщення при першому кадрі смерті
+                self.rect.y += 6  # Невеликий зсув вниз
+            if self.death_timer < 30:
+                self.image = self.death_frames[0]
+            elif self.death_timer < 60:
+                self.image = self.death_frames[1]
+            else:
+                # Зникнення ворога через 2 секунди (120 кадрів)
+                if self.death_timer >= 120:
+                    self.kill()
+
+    def take_damage(self, amount):
+        self.health -= amount
+        if self.health < 0:
+            self.health = 0
+
+    def draw_health_bar(self, screen):
+        bar_width = 100
+        bar_height = 10
+        fill = (self.health / self.max_health) * bar_width
+        outline_rect = pygame.Rect(self.rect.x, self.rect.y - 20, bar_width, bar_height)
+        fill_rect = pygame.Rect(self.rect.x, self.rect.y - 20, fill, bar_height)
+        pygame.draw.rect(screen, (255, 0, 0), fill_rect)
+        pygame.draw.rect(screen, (0, 0, 0), outline_rect, 2)
+
+    def draw(self, screen):
+        screen.blit(self.image, self.rect.topleft)
+        # Відобразити шкалу здоров'я
+        self.draw_health_bar(screen)
+
+
+# Завантаження зображень ворога
+images_dict = {
+    "enemy_attack1": pygame.image.load("images/ice_golem2.png").convert_alpha(),
+    "enemy_attack2": pygame.image.load("images/ice_golem3.png").convert_alpha(),
+    "enemy_attack3": pygame.image.load("images/ice_golem4.png").convert_alpha(),
+    "enemy_attack4": pygame.image.load("images/ice_golem5.png").convert_alpha(),
+    "enemy_rock": pygame.image.load("images/ice_golem_idle.png").convert_alpha(),
+    "enemy_death1": pygame.image.load("images/enemy_death1.png").convert_alpha(),
+    "enemy_death2": pygame.image.load("images/enemy_death2.png").convert_alpha()
+}
+
+# Створення екземпляра ворога на платформі
+enemy_platform = pygame.Rect(1150, SCREEN_HEIGHT - 500, 200, 20)  # координати та розмір платформи
+enemy = Enemy(x=enemy_platform.x + 50, y=enemy_platform.y - 50, width=50, height=50, images_dict=images_dict,
+              move_range=(enemy_platform.x, enemy_platform.x + enemy_platform.width - 50), speed=2)
+
+# Додавання ворога
+enemies = pygame.sprite.Group()
+enemies.add(enemy)
+keys = pygame.sprite.Group()
+treasures = pygame.sprite.Group()
+# Створення групи для зілля здоров'я
+health_potions = pygame.sprite.Group()
+
+# ключі
+key = Key(1340, 430)
+keys.add(key)
+
+# скарби
+treasure = Treasure(100, 60, health_potions)
+treasures.add(treasure)
+
+# Визначення координат ключа та скарбниці
+key_x, key_y = 100, 200
+key_width, key_height = 50, 50
+
+treasure_x, treasure_y = 300, 400
+treasure_width, treasure_height = 80, 80
+
+# Підготовка області ключа і області скарбниці
+key_area = pygame.Rect(key_x, key_y, key_width, key_height)
+treasure_area = pygame.Rect(treasure_x, treasure_y, treasure_width, treasure_height)
+
+# Створення екземпляра персонажа
+player = Player(150, SCREEN_HEIGHT - 300, 10, 10)
+
+# Ініціалізація змінних
+background_x = 0
+MOVEMENT_SPEED = 5
+
+# стани гри
+IN_GAME = 0
+IN_MENU = 1
+IN_INVENTORY = 2
+
+# Початковий стан гри
+game_state = IN_GAME
+
+# Створення екземплярів класів Menu та Inventory
+menu = Menu()
+inventory = Inventory()
+
+# Ініціалізація позицій фонів
+background1_x = 0
+background2_x = SCREEN_WIDTH
+
+# Швидкість прокрутки фону
+BACKGROUND_SCROLL_SPEED = 5
+
+treasure_open_key = pygame.K_5  # клавіша '5' для відкриття скарбу
+
+# Основний цикл гри
+running = True
+while running:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_LEFT:
+                player.moving_left = True
+            elif event.key == pygame.K_RIGHT:
+                player.moving_right = True
+            elif event.key == pygame.K_SPACE:
+                player.jump()
+            elif event.key == pygame.K_ESCAPE:
+                if game_state == IN_GAME:
+                    game_state = IN_MENU  # Змінюємо стан гри на "Меню"
+                elif game_state == IN_MENU:
+                    game_state = IN_GAME  # Змінюємо стан гри на "В грі"
+            elif event.key == pygame.K_1:  # Перевірка для входу в інвентар
+                if game_state == IN_GAME:
+                    game_state = IN_INVENTORY  # Змінюємо стан гри на "Інвентар"
+                elif game_state == IN_INVENTORY:
+                    game_state = IN_GAME  # Змінюємо стан гри на "В грі"
+            elif event.key == pygame.K_2:  # Клавіша для атаки
+                player.attack()
+            elif event.key == treasure_open_key:  # Перевірка для відкриття скарбу
+                # Перевірка, чи гравець знаходиться біля скарбу і він є заблокованим
+                for treasure in treasures:
+                    if pygame.sprite.collide_rect(player, treasure):
+                        if treasure.locked:
+                            if 'key' in inventory.items:
+                                inventory.remove_item('key')
+                                treasure.unlock()
+                                # Випадання зілля здоров'я
+                                if treasure.potion:
+                                    inventory.add_item('health_potion')
+
+                                treasure.rect.y -= 60  # зсуву вгору
+                                print("Treasure unlocked!")
+                            else:
+                                print("You need a key to unlock this treasure!")
+                        else:
+                            print("Treasure is already unlocked")
+            elif event.key == pygame.K_3:  # Клавіша для використання зілля здоров'я
+                if 'health_potion' in inventory.items:
+                    inventory.use_item('health_potion', player)
+        elif event.type == pygame.KEYUP:
+            if event.key == pygame.K_LEFT:
+                player.moving_left = False
+            elif event.key == pygame.K_RIGHT:
+                player.moving_right = False
+        elif event.type == pygame.MOUSEMOTION:
+            if game_state == IN_MENU:
+                menu.update_selection(event.pos)
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:  # Ліва кнопка миші
+                mouse_clicked = True
+
+    # Оновлення гри
+    player.update(platforms, keys, treasures, enemies, key_area, treasure_area, inventory, treasure)
+
+    # Перевірка зіткнень гравця з ключами
+    collected_keys = pygame.sprite.spritecollide(player, keys, False)
+    for key in collected_keys:
+        if not key.picked_up:
+            inventory.add_item('key')  # Додаємо ключ до інвентаря
+            key.picked_up = True
+
+    # Оновлення зіль здоров'я
+    health_potions.update()
+
+    for key in keys:
+        key.update()
+
+    for treasure in treasures:
+        treasure.update()
+
+    for platform in platforms:
+        platform.update()
+
+    # Оновлення ворогів
+    for enemy in enemies:
+        enemy.update(platforms, player)
+
+    # Завантаження фонового зображення
+    background = pygame.image.load("images/Background.png").convert()
+    background = pygame.transform.scale(background, (SCREEN_WIDTH, SCREEN_HEIGHT))
+
+    # Оновлення позиції фонів, якщо персонаж рухається
+    if player.moving_left:
+        background1_x += BACKGROUND_SCROLL_SPEED
+        background2_x += BACKGROUND_SCROLL_SPEED
+        for platform in platforms:
+            platform.rect.x += BACKGROUND_SCROLL_SPEED  # Зсув платформ вправо
+        for enemy in enemies:
+            enemy.rect.x += BACKGROUND_SCROLL_SPEED  # Зсув ворогів вправо
+        for key in keys:
+            key.rect.x += BACKGROUND_SCROLL_SPEED
+        for treasure in treasures:
+            treasure.rect.x += BACKGROUND_SCROLL_SPEED
+    elif player.moving_right:
+        background1_x -= BACKGROUND_SCROLL_SPEED
+        background2_x -= BACKGROUND_SCROLL_SPEED
+        for platform in platforms:
+            platform.rect.x -= BACKGROUND_SCROLL_SPEED  # Зсув платформ вліво
+        for enemy in enemies:
+            enemy.rect.x -= BACKGROUND_SCROLL_SPEED  # Зсув ворогів вліво
+        for key in keys:
+            key.rect.x -= BACKGROUND_SCROLL_SPEED
+        for treasure in treasures:
+            treasure.rect.x -= BACKGROUND_SCROLL_SPEED
+        for potion in health_potions:
+            potion.rect.x -= BACKGROUND_SCROLL_SPEED
+
+    # Якщо перший фон вийшов за межі екрана, перемістити його вправо
+    if background1_x <= -SCREEN_WIDTH:
+        background1_x = background2_x + SCREEN_WIDTH
+
+    # Якщо другий фон вийшов за межі екрана, перемістити його вправо
+    if background2_x <= -SCREEN_WIDTH:
+        background2_x = background1_x + SCREEN_WIDTH
+
+    # Малювання фонів
+    screen.blit(background, (background1_x, 0))
+    screen.blit(background, (background2_x, 0))
+
+    # Малювання платформ
+    for platform in platforms:
+        platform.draw(screen)
+
+    # Малювання персонажа
+    player.draw(screen)
+
+    treasures.draw(screen)
+    keys.draw(screen)
+    enemies.draw(screen)
+    health_potions.draw(screen)
+
+    # Малювання ворогів
+    for enemy in enemies:
+        enemy.draw(screen)
+
+    # Відображення елементів (меню, інвентар)
+    if game_state == IN_GAME:
+        pass
+    elif game_state == IN_MENU:
+        menu.draw(screen)  # Малюємо меню
+    elif game_state == IN_INVENTORY:
+        inventory.draw(screen)  # Малюємо інвентар
+
+    # Перевірка, чи помер гравець
+    if player.dead:
+        font = pygame.font.Font(None, 74)
+        text = font.render("You Lost", True, (255, 0, 0))
+        screen.blit(text, (250, 250))
+
+    # Оновлення відображення
+    pygame.display.flip()
+    pygame.time.Clock().tick()
+
+# Завершення Pygame
+pygame.quit()
+sys.exit()
